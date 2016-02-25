@@ -1,5 +1,8 @@
 package org.naveen.equitymanagement;
 
-public class Company {
+import java.util.List;
 
+public class Company {
+	private String quoteId;
+	private List<Equity> equities;
 }
