@@ -10,8 +10,16 @@ public abstract class Order {
 	private int quantity;
 	private String orderId;
 	
-	public boolean edit() {
+	public boolean edit(OrderInfo info) {
+		OrderContext ctxt = new OrderContextImpl(this, info);
+		currentState.doTransition(ctxt);
 		return true;
+	}
+	
+	public boolean cancel() {
+		//OrderContext
+		//currentState.doTransition(ctxt);
+		return false;
 	}
 	
 	public OrderState currentState() {
