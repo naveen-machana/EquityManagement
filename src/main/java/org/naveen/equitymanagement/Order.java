@@ -2,6 +2,7 @@ package org.naveen.equitymanagement;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -10,7 +11,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class Order {
+public class Order implements Comparable<Order> {
 	private static AtomicLong idProducer = new AtomicLong();
 	private OrderState currentState;
 	private static final Map<OrderState, Set<OrderState>> validTransitions = validOrderStateTransitions();
@@ -22,6 +23,8 @@ public class Order {
 	private final EquityOwner orderPlacer; 
 	private int quantityExecuted;
 	private final List<OrderInfo> orderExecutionHistory = new ArrayList<>();
+	private final List<OrderInfo> unmodifiableOrderHistory 
+			= Collections.unmodifiableList(orderExecutionHistory);
 	
 	public Order(OrderType orderType, Company company, 
 			int quantity, BigDecimal price, EquityOwner user) {
@@ -91,6 +94,10 @@ public class Order {
 		return false;
 	}
 	
+	public List<OrderInfo> orderHistory() {
+		return unmodifiableOrderHistory;
+	}
+	
 	public OrderState currentState() {
 		return currentState;
 	}
@@ -138,5 +145,22 @@ public class Order {
 		orderStates.put(OrderState.EXECUTED, new HashSet<OrderState>());
 		orderStates.put(OrderState.CANCELLED, new HashSet<OrderState>());
 		return orderStates;
+	}
+
+	
+	@Override
+	public int compareTo(Order o) {
+		
+		return 0;
+	}
+	
+	@Override
+	public boolean equals(Object other) {
+		return true;
+	}
+	
+	@Override
+	public int hashCode() {
+		return 1;
 	}
 }
