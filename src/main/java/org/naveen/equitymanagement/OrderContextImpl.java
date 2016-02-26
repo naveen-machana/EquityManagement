@@ -2,16 +2,22 @@ package org.naveen.equitymanagement;
 
 public class OrderContextImpl implements OrderContext {
 	
-	private Order order;
-	private OrderInfo info;
+	private final Order order;
+	private final OrderState targetState;
 	
-	public OrderContextImpl(Order order, OrderInfo info) {
+	public OrderContextImpl(Order order, OrderState targetState) {
 		this.order = order;
+		this.targetState = targetState();
 	}
 
 	@Override
 	public Order order() {
-		return null;
+		return order;
+	}
+
+	@Override
+	public OrderState targetState() {
+		return this.targetState;
 	}
 
 }
