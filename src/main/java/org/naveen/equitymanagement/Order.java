@@ -11,20 +11,28 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
+import org.naveen.equitymanagement.exception.EditCompletesOrderException;
+
 public class Order implements Comparable<Order> {
 	private static AtomicLong idProducer = new AtomicLong();
 	private OrderState currentState;
-	private static final Map<OrderState, Set<OrderState>> validTransitions = validOrderStateTransitions();
+	private static final Map<OrderState, Set<OrderState>> VALID_TRANSITIONS = validOrderStateTransitions();
+	private static final Set<OrderState> TERMINATED_STATES = EnumSet.of(OrderState.CANCELLED, OrderState.EXECUTED);
 	private final Company company;
 	private int quantity;
+	private int quantityExecuted;
+	private int quantityNeeded;
 	private final String orderId;
 	private BigDecimal price;
 	private final OrderType orderType;
 	private final EquityOwner orderPlacer; 
-	private int quantityExecuted;
+	
 	private final List<OrderInfo> orderExecutionHistory = new ArrayList<>();
 	private final List<OrderInfo> unmodifiableOrderHistory 
 			= Collections.unmodifiableList(orderExecutionHistory);
+	
+	private final List<Order> childOrders = new ArrayList<>();
+	private final List<Order> unmodifiableChildOrders = Collections.unmodifiableList(childOrders);
 	
 	public Order(OrderType orderType, Company company, 
 			int quantity, BigDecimal price, EquityOwner user) {
@@ -32,6 +40,7 @@ public class Order implements Comparable<Order> {
 		this.orderPlacer = user;
 		this.orderId = generateOrderId();
 		this.quantity = quantity;
+		this.quantityNeeded = quantity;
 		this.price = price;
 		this.orderType = orderType;
 	}
@@ -43,54 +52,58 @@ public class Order implements Comparable<Order> {
 	
 	// TODO: validate if this is a valid change.
 	private boolean isValidEdit(BigDecimal price, int quantity) {
+		if (TERMINATED_STATES.contains(currentState)) return false;
+		if (quantityExecuted > quantity) return false;
 		return true;
 	}
 	
-	public boolean edit(BigDecimal price, int quantity) {	
+	private int deltaForEdit(int quantityEdit) {
+		return quantityEdit - quantityExecuted;
+	}
+	
+	private Order copyPropertiesIntoNew(BigDecimal price, int quantity) {
+		return new Order(orderType, company, quantity, price, orderPlacer);
+	}
+	
+	public Order edit(BigDecimal price, int quantity) throws EditCompletesOrderException {	
 		
 		if (isValidTransition(currentState, OrderState.EDITED) &&
-			isValidEdit(price, quantity)) {
-			OrderContext ctxt = new OrderContextImpl(this, OrderState.EDITED);
-			currentState.doTransition(ctxt);
-			this.price = price;
-			this.quantity = quantity;
-			return true;
+			isValidEdit(price, quantity)) {			
+				doTransition(currentState, OrderState.EDITED);
+				int deltaQuantity = deltaForEdit(quantity);
+				if (deltaQuantity == 0) {
+					throw new EditCompletesOrderException();
+				}
+				Order newO = copyPropertiesIntoNew(price, deltaQuantity);
+				childOrders.add(newO);
+				return newO;
 		}
 		
-		return false;		
+		return this;		
 	}
 	
 	public boolean cancel() {
 		if (isValidTransition(currentState, OrderState.CANCELLED)) {
-			OrderContext ctxt = new OrderContextImpl(this, OrderState.CANCELLED);
-			currentState.doTransition(ctxt);
-			return true;
-		}
-		return false;
-	}
-	
-	private boolean partiallyExecute(BigDecimal price, int quantity) {
-		if (isValidTransition(currentState, OrderState.PARTIALLY_EXECUTED)) {
-			OrderContext ctxt = new OrderContextImpl(this, OrderState.PARTIALLY_EXECUTED);
-			currentState.doTransition(ctxt);
-			return true;
+				doTransition(currentState, OrderState.CANCELLED);
+				return true;
 		}
 		return false;
 	}
 	
 	public boolean execute(BigDecimal price, int quantity) {
+		int neededQuantity = neededQuantity();
+		OrderState targetState = quantity >= neededQuantity ? 
+								 OrderState.EXECUTED : 
+								 OrderState.PARTIALLY_EXECUTED;
+		int quantityToBeExec  = Math.min(quantity, neededQuantity);
 		
-		// if quantity sent to this method is less than quantity needed for this 
-		// order then partially execute this order
-		//if(quantity < this.quantity && orderType.isMatchablePrice(buyPrice, sellPrice))
-		
-		if (isValidTransition(currentState, OrderState.EXECUTED) //&& isValidExecutionPredicate(price, quantity)
-			) {
-			OrderContext ctxt = new OrderContextImpl(this, OrderState.EXECUTED);
-			currentState.doTransition(ctxt);
-			this.quantityExecuted += quantity;
+		if (isValidTransition(currentState, targetState)) {
+			doTransition(currentState, targetState);
+			this.quantityExecuted += quantityToBeExec;
+			orderExecutionHistory.add(new OrderInfo(quantityToBeExec, price));
 			return true;
 		}
+		
 		return false;
 	}
 	
@@ -98,16 +111,24 @@ public class Order implements Comparable<Order> {
 		return unmodifiableOrderHistory;
 	}
 	
+	public List<Order> forkedOrders() {
+		return unmodifiableChildOrders;
+	}
+	
 	public OrderState currentState() {
 		return currentState;
 	}
 	
-	public boolean isValidTransition(OrderState from, OrderState to) {
-		Set<OrderState> states = validTransitions.get(from);
+	public int neededQuantity() {
+		return quantity - quantityExecuted;
+	}
+	
+	private boolean isValidTransition(OrderState from, OrderState to) {
+		Set<OrderState> states = VALID_TRANSITIONS.get(from);
 		return states.contains(to);
 	}
 	
-	public void setCurrentState(OrderState targetState) {
+	private void setCurrentState(OrderState targetState) {
 		this.currentState = targetState;
 	}
 	
@@ -122,7 +143,11 @@ public class Order implements Comparable<Order> {
 		
 		public int quantityExecuted() { return quantityExecuted;}
 		public BigDecimal priceExecuted() {return priceExecuted;}
-	}  
+	}
+	
+	private void doTransition(OrderState current, OrderState target) {		
+		this.setCurrentState(target);
+	}
 	
 	private static Map<OrderState, Set<OrderState>> validOrderStateTransitions() {
 		Map<OrderState, Set<OrderState>> orderStates = new EnumMap<>(OrderState.class);
@@ -150,17 +175,42 @@ public class Order implements Comparable<Order> {
 	
 	@Override
 	public int compareTo(Order o) {
+		int ot = orderType.compareTo(o.orderType); 
+		if (ot != 0) {
+			return ot;
+		}
 		
-		return 0;
+		int op = price.compareTo(o.price); 
+		if (op != 0) {
+			return op;
+		}		
+		
+		int oq = Integer.compare(quantityNeeded, o.quantityNeeded);
+		if (oq != 0) {
+			return oq;
+		}
+		return orderId.compareTo(o.orderId);
 	}
 	
 	@Override
 	public boolean equals(Object other) {
+		if (this == other) return true;
+		if (!(other instanceof Order)) return false;
+		Order o = (Order)other;
+		if (orderType != o.orderType) return false;
+		if (price != o.price) return false;
+		if (quantityNeeded != o.quantityNeeded) return false;
+		if (!orderId.equals(o.orderId)) return false;
 		return true;
 	}
 	
 	@Override
 	public int hashCode() {
-		return 1;
+		int r = 17;
+		r = r * 31 + orderType.hashCode();
+		r = r * 31 + Float.floatToIntBits(price.floatValue());
+		r = r * 31 + quantityNeeded;
+		r = r * 31 + orderId.hashCode();
+		return r;
 	}
 }
