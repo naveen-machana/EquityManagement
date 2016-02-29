@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.naveen.equitymanagement.exception.EditCompletesOrderException;
+import org.naveen.equitymanagement.exception.InvalidEditException;
 
 public class Order implements Comparable<Order> {
 	private static AtomicLong idProducer = new AtomicLong();
@@ -26,6 +27,7 @@ public class Order implements Comparable<Order> {
 	private BigDecimal price;
 	private final OrderType orderType;
 	private final EquityOwner orderPlacer; 
+	private final Order parent;
 	
 	private final List<OrderInfo> orderExecutionHistory = new ArrayList<>();
 	private final List<OrderInfo> unmodifiableOrderHistory 
@@ -35,7 +37,8 @@ public class Order implements Comparable<Order> {
 	private final List<Order> unmodifiableChildOrders = Collections.unmodifiableList(childOrders);
 	
 	public Order(OrderType orderType, Company company, 
-			int quantity, BigDecimal price, EquityOwner user) {
+			int quantity, BigDecimal price, EquityOwner user,
+			Order parent) {
 		this.company = company;
 		this.orderPlacer = user;
 		this.orderId = generateOrderId();
@@ -43,6 +46,7 @@ public class Order implements Comparable<Order> {
 		this.quantityNeeded = quantity;
 		this.price = price;
 		this.orderType = orderType;
+		this.parent = parent;
 	}
 	
 	private String generateOrderId() {
@@ -62,29 +66,32 @@ public class Order implements Comparable<Order> {
 	}
 	
 	private Order copyPropertiesIntoNew(BigDecimal price, int quantity) {
-		return new Order(orderType, company, quantity, price, orderPlacer);
+		return new Order(orderType, company, quantity, price, orderPlacer, this);
 	}
 	
-	public Order edit(BigDecimal price, int quantity) throws EditCompletesOrderException {	
+	public Order edit(BigDecimal price, int quantity) throws InvalidEditException {	
 		
 		if (isValidTransition(currentState, OrderState.EDITED) &&
 			isValidEdit(price, quantity)) {			
 				doTransition(currentState, OrderState.EDITED);
 				int deltaQuantity = deltaForEdit(quantity);
 				if (deltaQuantity == 0) {
-					throw new EditCompletesOrderException();
+					doTransition(currentState, OrderState.EXECUTED);
+					orderExecutionHistory.add(new OrderInfo(0, BigDecimal.ZERO, "Edit completes the order"));
+					return this;
 				}
 				Order newO = copyPropertiesIntoNew(price, deltaQuantity);
 				childOrders.add(newO);
 				return newO;
 		}
 		
-		return this;		
+		throw new InvalidEditException();		
 	}
 	
 	public boolean cancel() {
 		if (isValidTransition(currentState, OrderState.CANCELLED)) {
 				doTransition(currentState, OrderState.CANCELLED);
+				orderExecutionHistory.add(new OrderInfo(0, BigDecimal.ZERO, "Order cancelled."));
 				return true;
 		}
 		return false;
@@ -100,7 +107,7 @@ public class Order implements Comparable<Order> {
 		if (isValidTransition(currentState, targetState)) {
 			doTransition(currentState, targetState);
 			this.quantityExecuted += quantityToBeExec;
-			orderExecutionHistory.add(new OrderInfo(quantityToBeExec, price));
+			orderExecutionHistory.add(new OrderInfo(quantityToBeExec, price, ""));
 			return true;
 		}
 		
@@ -132,17 +139,32 @@ public class Order implements Comparable<Order> {
 		this.currentState = targetState;
 	}
 	
+	private void adjustOrderQuantities(int quantity) {
+		this.quantityExecuted += quantity;
+		this.quantityNeeded -= quantity;
+	}
+	
+	private void delegateToParentQuantity(int quantity) {
+		if (parent != null) {			
+			parent.adjustOrderQuantities(quantity);
+			parent.doTransition(parent.currentState, OrderState.EXECUTED);			
+		}
+	}
+	
 	public static class OrderInfo {
 		private final int quantityExecuted;
 		private final BigDecimal priceExecuted;
+		private final String historyMessage;
 		
-		public OrderInfo(int quantityExecuted, BigDecimal priceExecuted) {
+		public OrderInfo(int quantityExecuted, BigDecimal priceExecuted, String message) {
 			this.quantityExecuted = quantityExecuted;
 			this.priceExecuted = priceExecuted;
+			this.historyMessage = message;
 		}
 		
 		public int quantityExecuted() { return quantityExecuted;}
 		public BigDecimal priceExecuted() {return priceExecuted;}
+		public String message() {return historyMessage; }
 	}
 	
 	private void doTransition(OrderState current, OrderState target) {		
