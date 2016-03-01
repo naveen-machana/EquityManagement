@@ -21,11 +21,10 @@ public class Order implements Comparable<Order> {
 	private static final Set<OrderState> TERMINATED_STATES = EnumSet.of(OrderState.CANCELLED, OrderState.EXECUTED);
 	private final Company company;
 	private int quantity;
-	private int quantityExecuted;
-	private int quantityNeeded;
+	private int quantityExecuted = 0;
 	private final String orderId;
 	private BigDecimal price;
-	private final OrderType orderType;
+	private OrderType orderType;
 	private final EquityOwner orderPlacer; 
 	private final Order parent;
 	
@@ -33,17 +32,42 @@ public class Order implements Comparable<Order> {
 	private final List<OrderInfo> unmodifiableOrderHistory 
 			= Collections.unmodifiableList(orderExecutionHistory);
 	
-	private final List<Order> childOrders = new ArrayList<>();
-	private final List<Order> unmodifiableChildOrders = Collections.unmodifiableList(childOrders);
+	private Order forkedOrder = null;
 	
 	public Order(OrderType orderType, Company company, 
-			int quantity, BigDecimal price, EquityOwner user,
-			Order parent) {
+			int quantity, BigDecimal price, EquityOwner user) {
+		
+		if (price.compareTo(BigDecimal.ZERO) <= 0) {
+			throw new IllegalArgumentException("Invalid value provided for price");
+		}
+		
+		if (quantity <= 0) {
+			throw new IllegalArgumentException("Invalid value provided for quantity");
+		}
+		
 		this.company = company;
 		this.orderPlacer = user;
 		this.orderId = generateOrderId();
 		this.quantity = quantity;
-		this.quantityNeeded = quantity;
+		this.price = price;
+		this.orderType = orderType;
+		this.parent = null;
+	}
+	
+	private Order(OrderType orderType, Company company, 
+			int quantity, BigDecimal price, EquityOwner user, Order parent) {
+		
+		if (price.compareTo(BigDecimal.ZERO) <= 0) {
+			throw new IllegalArgumentException("Invalid value provided for price");
+		}
+		
+		if (quantity <= 0) {
+			throw new IllegalArgumentException("Invalid value provided for quantity");
+		}
+		this.company = company;
+		this.orderPlacer = user;
+		this.orderId = generateOrderId();
+		this.quantity = quantity;
 		this.price = price;
 		this.orderType = orderType;
 		this.parent = parent;
@@ -54,13 +78,6 @@ public class Order implements Comparable<Order> {
 		return company.quoteId() + id;
 	}
 	
-	// TODO: validate if this is a valid change.
-	private boolean isValidEdit(BigDecimal price, int quantity) {
-		if (TERMINATED_STATES.contains(currentState)) return false;
-		if (quantityExecuted > quantity) return false;
-		return true;
-	}
-	
 	private int deltaForEdit(int quantityEdit) {
 		return quantityEdit - quantityExecuted;
 	}
@@ -69,57 +86,70 @@ public class Order implements Comparable<Order> {
 		return new Order(orderType, company, quantity, price, orderPlacer, this);
 	}
 	
-	public Order edit(BigDecimal price, int quantity) throws InvalidEditException {	
+	public Order edit(BigDecimal price, int editQuantity){	
 		
-		if (isValidTransition(currentState, OrderState.EDITED) &&
-			isValidEdit(price, quantity)) {			
+		if (isValidTransition(OrderState.EDITED)) {
+			if (editQuantity > quantityExecuted) {
 				doTransition(currentState, OrderState.EDITED);
-				int deltaQuantity = deltaForEdit(quantity);
-				if (deltaQuantity == 0) {
-					doTransition(currentState, OrderState.EXECUTED);
-					orderExecutionHistory.add(new OrderInfo(0, BigDecimal.ZERO, "Edit completes the order"));
-					return this;
-				}
+				setParentState(currentState);
+				int deltaQuantity = deltaForEdit(editQuantity);				
 				Order newO = copyPropertiesIntoNew(price, deltaQuantity);
-				childOrders.add(newO);
+				forkedOrder = newO;
 				return newO;
-		}
-		
-		throw new InvalidEditException();		
+			}
+			else {
+				cancel();
+				return this;
+			}				
+		}	
+		throw new IllegalStateException();
 	}
 	
 	public boolean cancel() {
-		if (isValidTransition(currentState, OrderState.CANCELLED)) {
-				doTransition(currentState, OrderState.CANCELLED);
-				orderExecutionHistory.add(new OrderInfo(0, BigDecimal.ZERO, "Order cancelled."));
-				return true;
+		if (isValidTransition(OrderState.CANCELLED)) {
+			doTransition(currentState, OrderState.CANCELLED);
+			setParentState(currentState);
+			orderExecutionHistory.add(new OrderInfo(0, BigDecimal.ZERO, "Order cancelled."));
+			return true;
 		}
-		return false;
+		throw new IllegalStateException();
 	}
 	
-	public boolean execute(BigDecimal price, int quantity) {
-		int neededQuantity = neededQuantity();
-		OrderState targetState = quantity >= neededQuantity ? 
-								 OrderState.EXECUTED : 
-								 OrderState.PARTIALLY_EXECUTED;
-		int quantityToBeExec  = Math.min(quantity, neededQuantity);
+	public boolean execute(BigDecimal price, int quantityE) {
 		
-		if (isValidTransition(currentState, targetState)) {
-			doTransition(currentState, targetState);
-			this.quantityExecuted += quantityToBeExec;
-			orderExecutionHistory.add(new OrderInfo(quantityToBeExec, price, ""));
+		if (TERMINATED_STATES.contains(currentState)) {
+			adjustOrderQuantities(quantityE);
+			//orderExecutionHistory.add(new OrderInfo(quantityToBeExec, price, ""));
 			return true;
 		}
 		
-		return false;
+		throw new IllegalStateException();
+	}
+	
+	private void adjustOrderQuantities(int q) {
+		int neededQuantity = neededQuantity();		
+		OrderState targetState = quantity >= neededQuantity ? 
+				 OrderState.EXECUTED : 
+				 OrderState.PARTIALLY_EXECUTED;
+		int quantityToBeExecuted  = Math.min(q, neededQuantity);
+		this.quantityExecuted += quantityToBeExecuted;
+		doTransition(currentState, targetState);	
+		setParentState(targetState);
+	}
+	
+	private void setParentState(OrderState targetState) {
+		if (parent != null) {			
+			parent.doTransition(currentState, targetState);
+			parent.setParentState(targetState);
+		}
 	}
 	
 	public List<OrderInfo> orderHistory() {
 		return unmodifiableOrderHistory;
 	}
 	
-	public List<Order> forkedOrders() {
-		return unmodifiableChildOrders;
+	public Order childOrder() {
+		return forkedOrder;
 	}
 	
 	public OrderState currentState() {
@@ -130,25 +160,18 @@ public class Order implements Comparable<Order> {
 		return quantity - quantityExecuted;
 	}
 	
-	private boolean isValidTransition(OrderState from, OrderState to) {
+	private boolean isValidTransition(OrderState to) {
+		OrderState from = currentState; 
 		Set<OrderState> states = VALID_TRANSITIONS.get(from);
 		return states.contains(to);
 	}
 	
+	public void flipOrderType() {
+		orderType = orderType == OrderType.BUY ? OrderType.SELL : OrderType.BUY;
+	}
+	
 	private void setCurrentState(OrderState targetState) {
 		this.currentState = targetState;
-	}
-	
-	private void adjustOrderQuantities(int quantity) {
-		this.quantityExecuted += quantity;
-		this.quantityNeeded -= quantity;
-	}
-	
-	private void delegateToParentQuantity(int quantity) {
-		if (parent != null) {			
-			parent.adjustOrderQuantities(quantity);
-			parent.doTransition(parent.currentState, OrderState.EXECUTED);			
-		}
 	}
 	
 	public static class OrderInfo {
@@ -207,7 +230,10 @@ public class Order implements Comparable<Order> {
 			return op;
 		}		
 		
-		int oq = Integer.compare(quantityNeeded, o.quantityNeeded);
+		int thisNeededQuantity = neededQuantity();
+		int otherNeededQuantity = neededQuantity();
+		
+		int oq = Integer.compare(thisNeededQuantity, otherNeededQuantity);
 		if (oq != 0) {
 			return oq;
 		}
@@ -221,7 +247,7 @@ public class Order implements Comparable<Order> {
 		Order o = (Order)other;
 		if (orderType != o.orderType) return false;
 		if (price != o.price) return false;
-		if (quantityNeeded != o.quantityNeeded) return false;
+		if (this.neededQuantity() != o.neededQuantity()) return false;
 		if (!orderId.equals(o.orderId)) return false;
 		return true;
 	}
@@ -231,7 +257,7 @@ public class Order implements Comparable<Order> {
 		int r = 17;
 		r = r * 31 + orderType.hashCode();
 		r = r * 31 + Float.floatToIntBits(price.floatValue());
-		r = r * 31 + quantityNeeded;
+		r = r * 31 + this.neededQuantity();
 		r = r * 31 + orderId.hashCode();
 		return r;
 	}
