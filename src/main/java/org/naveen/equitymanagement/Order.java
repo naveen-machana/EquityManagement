@@ -11,19 +11,16 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
-import org.naveen.equitymanagement.exception.EditCompletesOrderException;
-import org.naveen.equitymanagement.exception.InvalidEditException;
-
 public class Order implements Comparable<Order> {
 	private static AtomicLong idProducer = new AtomicLong();
 	private OrderState currentState;
 	private static final Map<OrderState, Set<OrderState>> VALID_TRANSITIONS = validOrderStateTransitions();
 	private static final Set<OrderState> TERMINATED_STATES = EnumSet.of(OrderState.CANCELLED, OrderState.EXECUTED);
 	private final Company company;
-	private int quantity;
+	private final int quantity;
 	private int quantityExecuted = 0;
 	private final String orderId;
-	private BigDecimal price;
+	private final BigDecimal price;
 	private OrderType orderType;
 	private final EquityOwner orderPlacer; 
 	private final Order parent;
@@ -52,6 +49,7 @@ public class Order implements Comparable<Order> {
 		this.price = price;
 		this.orderType = orderType;
 		this.parent = null;
+		this.currentState = OrderState.NEW;
 	}
 	
 	private Order(OrderType orderType, Company company, 
@@ -71,6 +69,7 @@ public class Order implements Comparable<Order> {
 		this.price = price;
 		this.orderType = orderType;
 		this.parent = parent;
+		this.currentState = OrderState.NEW;
 	}
 	
 	private String generateOrderId() {
